@@ -1,10 +1,10 @@
 import ffmpeg from "fluent-ffmpeg";
 import * as fs from "fs";
 import * as path from "path";
-import { SimpleSongData, SongList } from "../types/song";
+import { NickNameTable, SimpleSongData, SongList } from "../types/song";
 import { Context, h, Session } from "koishi"
-import { group } from "console";
-import { getBestMatch } from "../utils/fuzzyMatch";
+import { getBestMatch, matchSong } from "../utils/fuzzyMatch";
+import * as xlsx from 'xlsx';
 
 interface GamingGroup{
     groupID:string,
@@ -13,29 +13,93 @@ interface GamingGroup{
     countdown:NodeJS.Timeout,
 }
 
+const tempAssetPath = path.join(__dirname,'../../../../data/assets/temp')
+const songAssetPath = path.join(__dirname,'../../../../data/assets/songMp3')
+
 const songListUrl = 'https://bestdori.com/api/songs/all.7.json'
+const nickNamesTableUrl = 'https://raw.githubusercontent.com/Yamamoto-2/tsugu-bangdream-bot/master/backend/config/nickname_song.xlsx'
 const songAssetUrl = 'https://bestdori.com/assets/jp/sound' //https://bestdori.com/assets/jp/sound/bgm[songID]_rip/bgm[songID].mp3
 const songDataUrl = 'https://bestdori.com/api/songs' //https://bestdori.com/api/songs/[songID].json
 let gamingGroups:GamingGroup[] = [] //正在进行猜曲的群组
-let songList:{list:SongList,updateTime:number} = { list: undefined, updateTime: 0 } //所有歌曲的简略数据
+export let songList:{list:SongList,updateTime:number} = { list: undefined, updateTime: 0 } //所有歌曲的简略数据
 let songIDs:number[] = [] //所有歌曲的ID
+let nickNamesTable:NickNameTable[] = [] 
+
+export async function guessSongInit(ctx:Context){
+    initAssetsFloader()
+    await loadNickNameTable(ctx)
+}
+
+function initAssetsFloader(){
+    if(!fs.existsSync(tempAssetPath)){
+        fs.mkdirSync(tempAssetPath)
+    }
+    if(!fs.existsSync(songAssetPath)){
+        fs.mkdirSync(songAssetPath)
+    }
+}
 
 export async function getAllSongList(ctx:Context){
-    const listJsonData = path.join(__dirname,'../assets/temp/songList.json')
+    const listJsonData = path.join(__dirname,'../../../../data/assets/temp/songList.json')
     const now = Date.now()
     if(fs.existsSync(listJsonData)){
         const stat = fs.statSync(listJsonData)
-        if(now - stat.birthtime.getDate() > 1000 * 60 * 60){
+        if(now - stat.birthtime.getDate() < 1000 * 60 * 60){
             songList.list = JSON.parse(fs.readFileSync(listJsonData,'utf-8'))
             songList.updateTime = now
             songIDs = Object.keys(songList.list).map(Number)
         }
+        else{
+            await getDataFromNetwork()
+        }
     }
     else{
+        await getDataFromNetwork()
+    }
+    async function getDataFromNetwork(){
         songList.list = await ctx.http.get(songListUrl)
         fs.writeFileSync(listJsonData,JSON.stringify(songList.list),'utf-8')
         songList.updateTime = now
         songIDs = Object.keys(songList.list).map(Number)
+    }
+}
+
+async function loadNickNameTable(ctx:Context){
+    const nickNameTablePath = path.join(__dirname,'../../../../data/assets/temp/nickname_song.xlsx')
+    const now = Date.now()
+    if(fs.existsSync(nickNameTablePath)){
+        const stat = fs.statSync(nickNameTablePath)
+        // if(now - stat.birthtime.getDate() < 1000 * 60 * 60 * 24){
+            const nickNameTable = xlsx.readFile(nickNameTablePath)
+            const data = xlsx.utils.sheet_to_json(nickNameTable.Sheets['工作表1']) as any[]
+            nickNamesTable = data.map((item) => {
+                return{
+                    songID:item['Id'],
+                    songName:item['Title'],
+                    nickNames:item['Nickname']? item['Nickname'].split(','):[]
+                }
+            })
+        // }
+        // else{
+        //     await getDataFromNetwork()
+        // }
+    }
+    else{
+        await getDataFromNetwork()
+    }
+    async function getDataFromNetwork(){
+        const nicknameXLSX = await ctx.http.get(nickNamesTableUrl,{responseType:'arraybuffer'})
+        const buffer = Buffer.from(nicknameXLSX)
+        fs.writeFileSync(nickNameTablePath,buffer)
+        const nickNameTable = xlsx.readFile(nickNameTablePath)
+        const data = xlsx.utils.sheet_to_json(nickNameTable.Sheets['工作表1']) as any[]
+        nickNamesTable = data.map((item) => {
+            return{
+                songID:item['Id'],
+                songName:item['Title'],
+                nickNames:item['Nickname']? item['Nickname'].split(','):[]
+            }
+        })
     }
 }
 
@@ -64,19 +128,19 @@ export async function startGuessingSong(ctx:Context, session:Session) {
         return
     }
     //生成一个随机数作为猜曲答案对应的歌曲ID
-    // const answerID = 242
     const answerID = getRandomSongID()
-    console.log(`当前要猜的歌曲为: ID${answerID}:`+songList.list[answerID].musicTitle[0])
+    console.log(`[${session.event.channel.name}] 当前要猜的歌曲为: ID${answerID}:`+songList.list[answerID].musicTitle[0])
     gamingGroups.push({groupID:session.channelId, songID:answerID, songName:songList.list[answerID].musicTitle[0], countdown:undefined})
     const audiobuffer = await processedAudio(ctx,answerID,session.channelId)
     if(audiobuffer == undefined){
         session.sendQueued('audio is undefined')
         return
     }
-    session.sendQueued('猜曲开始，请发送[。歌曲名]或[。歌曲ID]开始猜曲吧(英文的.也可以哦),时间限制为50s',500)
+    session.sendQueued('猜曲开始，请发送[。歌曲名]或[。歌曲ID]开始猜曲吧(英文的.也可以哦),时间限制为90s\nTips:本功能还在测试中，歌名匹配不是很准，别名库也还没做，可以先用茨菇的查曲找找ID',500)
     session.sendQueued(h.audio(audiobuffer,'audio/mp3'))
+    //设置时间限制
     const index = gamingGroups.findIndex(value => value.groupID == session.channelId)
-    const timeout = setTimeout(()=>endGussingSong(session,true),50000)
+    const timeout = setTimeout(()=>endGussingSong(session,true),90000)
     gamingGroups[index].countdown = timeout
 }
 
@@ -104,7 +168,7 @@ function fastEndGussingSong(groupID:string){
     gamingGroups = gamingGroups.filter(group => group.groupID != groupID)
 }
 
-export function checkAnswer(session:Session){
+export async function checkAnswer(session:Session){
     //检查是否是正在游戏的群成员触发的
     if(gamingGroups.some(value => value.groupID == session.channelId)){
         const index = gamingGroups.findIndex(value => value.groupID == session.channelId)
@@ -114,7 +178,7 @@ export function checkAnswer(session:Session){
             if(id == gamingGroups[index].songID){
                 let messageList = []
                 messageList.push(h('img',{src:getJacketUrl(gamingGroups[index].songID)}))
-                messageList.push(h('at',{id:session.userId}) + ` 回答正确，答案是${gamingGroups[index].songName}`)
+                messageList.push(h('at',{id:session.userId}))
                 messageList.push(` 回答正确，答案是${gamingGroups[index].songName}`)
                 session.send(messageList)
                 fastEndGussingSong(session.channelId)
@@ -125,26 +189,43 @@ export function checkAnswer(session:Session){
             }
         }
         else{
-            const options:string[] = Object.values(songList.list).map((value)=> {
-                if(value.musicTitle[0]){
-                    return value.musicTitle[0]
+            const match = matchSong(nickNamesTable,answer)
+            console.log('MatchSongs:' + match)
+            if(match.length == 1){
+                if(match[0] == gamingGroups[index].songName){
+                    let messageList = []
+                    messageList.push(h('img',{src:getJacketUrl(gamingGroups[index].songID)}))
+                    messageList.push(h('at',{id:session.userId}))
+                    messageList.push(` 回答正确，答案是${gamingGroups[index].songName}`)
+                    session.send(messageList)
+                    fastEndGussingSong(session.channelId)
                 }
                 else{
-                    return undefined
+                    session.send(`答案不是${songList.list[match[0]]}哦`)
                 }
-            }).filter((value)=>value != undefined)
-            const bestMatch = getBestMatch(options,answer)
-            console.log('bestMatch: '+ bestMatch)
-            if(bestMatch == gamingGroups[index].songName){
-                let messageList = []
-                messageList.push(h('img',{src:getJacketUrl(gamingGroups[index].songID)}))
-                messageList.push(h('at',{id:session.userId}) + ` 回答正确，答案是${gamingGroups[index].songName}`)
-                messageList.push(` 回答正确，答案是${gamingGroups[index].songName}`)
-                session.send(messageList)
-                fastEndGussingSong(session.channelId)
             }
             else{
-                session.send(`答案不是${bestMatch}哦`)
+                let msg = `查询到${match.length}首相关歌曲，请在10s内回复[编号]进行选择\n`
+                for(let i = 0;i < match.length;i++){
+                    msg += `${i+1}.${match[i]}\n`
+                }
+                msg = msg.slice(0,msg.length-2)
+                session.sendQueued(msg)
+                const reply = await session.prompt(10000)
+                if(parseInt(reply)){
+                    const id = parseInt(reply)
+                    if(match[id-1] == gamingGroups[index].songName){
+                        let messageList = []
+                        messageList.push(h('img',{src:getJacketUrl(gamingGroups[index].songID)}))
+                        messageList.push(h('at',{id:session.userId}))
+                        messageList.push(` 回答正确，答案是${gamingGroups[index].songName}`)
+                        session.sendQueued(messageList)
+                        fastEndGussingSong(session.channelId)
+                    }
+                    else{
+                        session.sendQueued(`答案不是${match[id-1]}哦`)
+                    }
+                }
             }
         }
     }
@@ -158,7 +239,7 @@ function getRandomSongID():number{
         answerID = songIDs[answerIndex]
         if(answerID < 1000){
             const songTilte = songList.list[answerID].musicTitle[0].toLowerCase()
-            if( songTilte != undefined && !songTilte.includes('ver') && !songTilte.includes('full')){
+            if( songTilte != undefined && !songTilte.includes('ver') && !songTilte.includes('full') && !songTilte.includes('超高難易度') && !songTilte.includes('（')){
                 songIDisOK = true
             }
         }
@@ -178,10 +259,16 @@ function getJacketUrl(songID:number):string{
 
 async function processedAudio(ctx:Context, songID:number, groupID:string):Promise<Buffer>{
     const idString = songID.toString().padStart(3,'0')
-    const songAudio = await ctx.http.get(`${songAssetUrl}/bgm${idString}_rip/bgm${idString}.mp3`,{ responseType: 'arraybuffer' })
-    const buffer = Buffer.from(songAudio)
-    const filePath = path.join(__dirname,`../assets/songMp3/song${idString}.mp3`)
-    const tempFilePath = path.join(__dirname,`../assets/temp/${groupID}.mp3`)
+    const filePath = path.join(__dirname,`../../../../data/assets/songMp3/song${idString}.mp3`)
+    const tempFilePath = path.join(__dirname,`../../../../data/assets/temp/${groupID}.mp3`)
+    let buffer:Buffer
+    if(fs.existsSync(filePath)){
+        buffer = fs.readFileSync(filePath)
+    }
+    else{
+        const songAudio = await ctx.http.get(`${songAssetUrl}/bgm${idString}_rip/bgm${idString}.mp3`,{ responseType: 'arraybuffer' })
+        buffer = Buffer.from(songAudio)
+    }
     fs.writeFileSync(filePath,buffer)
     return new Promise<Buffer>((resolve,reject)=>{
         ffmpeg.ffprobe(filePath,(err,metadata)=>{
@@ -219,19 +306,14 @@ function getRandomAudioCut(duration:number):number{
     const startEndLength = Math.floor(totalLength * 0.2);
     // 中间的60%长度
     const middleLength = Math.floor(totalLength * 0.6);
-    // 随机生成的开始时间和结束时间
     let startTime = 0;
-    // 随机数决定选择哪个区域
     const randomNum = Math.random();
-    // 权重: 开头和结尾部分各20%，中间部分60%
+    // 权重: 开头和结尾部分20%，中间部分80%
     if (randomNum < 0.1) {
-        // 选择开头的20%
         startTime = Math.random() * startEndLength;
     } else if (randomNum < 0.9) {
-        // 选择中间的60%
         startTime = startEndLength + (Math.random() * middleLength);
     } else {
-        // 选择结尾的20%
         startTime = totalLength - startEndLength + (Math.random() * startEndLength);
     }
     return startTime

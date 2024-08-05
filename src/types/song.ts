@@ -23,3 +23,9 @@ interface Difficulty {
     playLevel:    number;
     publishedAt?: string[];
 }
+
+export interface NickNameTable{
+    songID:number,
+    songName:string,
+    nickNames:string[]
+}

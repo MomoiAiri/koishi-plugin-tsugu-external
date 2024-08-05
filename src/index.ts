@@ -1,5 +1,5 @@
 import { Context, Schema, Session } from 'koishi'
-import { checkAnswer, endGussingSong, getAllSongList, startGuessingSong } from './games/guessSong'
+import { checkAnswer, endGussingSong, getAllSongList, guessSongInit, startGuessingSong } from './games/guessSong'
 
 export const name = 'tsugu-external'
 
@@ -10,6 +10,8 @@ export const Config: Schema<Config> = Schema.object({
 })
 
 export function apply(ctx: Context) {
+
+  guessSongInit(ctx)
 
   ctx.middleware((session,next)=>{
     if(session.content.startsWith('。')||session.content.startsWith('.')){
@@ -26,11 +28,5 @@ export function apply(ctx: Context) {
   ctx.command('结束猜曲')
   .action(async({session},_)=>{
     endGussingSong(session)
-  })
-
-  ctx.command('songlist')
-  .action(async({session},_)=>{
-    await getAllSongList(ctx)
-    console.log('获取歌曲列 表')
   })
 }
