@@ -46,7 +46,7 @@ export function matchSong(options:NickNameTable[], key:string):string[]{
             matchResult.push(options[i].songID)
         }
     }
-    if(matchResult.length == 0){
+    if(matchResult.length == 0 || matchResult.length > 10){
         const newoptions:string[] = Object.values(songList.list).map((value)=> {
             if(value.musicTitle[0]){
                 return value.musicTitle[0]

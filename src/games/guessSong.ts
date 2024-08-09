@@ -5,6 +5,7 @@ import { NickNameTable, SimpleSongData, SongList } from "../types/song";
 import { Context, h, Session } from "koishi"
 import { getBestMatch, matchSong } from "../utils/fuzzyMatch";
 import * as xlsx from 'xlsx';
+import { pluginConfig, songAssetPath, tempAssetPath } from "..";
 
 interface GamingGroup{
     groupID:string,
@@ -13,13 +14,13 @@ interface GamingGroup{
     countdown:NodeJS.Timeout,
 }
 
-const tempAssetPath = path.join(__dirname,'../../../../data/assets/temp')
-const songAssetPath = path.join(__dirname,'../../../../data/assets/songMp3')
+
 
 const songListUrl = 'https://bestdori.com/api/songs/all.7.json'
 const nickNamesTableUrl = 'https://raw.githubusercontent.com/Yamamoto-2/tsugu-bangdream-bot/master/backend/config/nickname_song.xlsx'
 const songAssetUrl = 'https://bestdori.com/assets/jp/sound' //https://bestdori.com/assets/jp/sound/bgm[songID]_rip/bgm[songID].mp3
 const songDataUrl = 'https://bestdori.com/api/songs' //https://bestdori.com/api/songs/[songID].json
+const blockedWords = ['ver' ,'full','超高難易度','（']
 let gamingGroups:GamingGroup[] = [] //正在进行猜曲的群组
 export let songList:{list:SongList,updateTime:number} = { list: undefined, updateTime: 0 } //所有歌曲的简略数据
 let songIDs:number[] = [] //所有歌曲的ID
@@ -40,7 +41,7 @@ function initAssetsFloader(){
 }
 
 export async function getAllSongList(ctx:Context){
-    const listJsonData = path.join(__dirname,'../../../../data/assets/temp/songList.json')
+    const listJsonData = path.join(tempAssetPath,'songList.json')
     const now = Date.now()
     if(fs.existsSync(listJsonData)){
         const stat = fs.statSync(listJsonData)
@@ -65,7 +66,7 @@ export async function getAllSongList(ctx:Context){
 }
 
 async function loadNickNameTable(ctx:Context){
-    const nickNameTablePath = path.join(__dirname,'../../../../data/assets/temp/nickname_song.xlsx')
+    const nickNameTablePath = path.join(tempAssetPath,'nickname_song.xlsx')
     const now = Date.now()
     if(fs.existsSync(nickNameTablePath)){
         const stat = fs.statSync(nickNameTablePath)
@@ -136,7 +137,7 @@ export async function startGuessingSong(ctx:Context, session:Session) {
         session.sendQueued('audio is undefined')
         return
     }
-    session.sendQueued('猜曲开始，请发送[。歌曲名]或[。歌曲ID]开始猜曲吧(英文的.也可以哦),时间限制为90s\nTips:本功能还在测试中，歌名匹配不是很准，别名库也还没做，可以先用茨菇的查曲找找ID',500)
+    session.sendQueued('猜曲开始，请发送[。歌曲名]或[。歌曲ID]开始猜曲吧(英文的.也可以哦),时间限制为90s\nTips:可以用茨菇的查曲',500)
     session.sendQueued(h.audio(audiobuffer,'audio/mp3'))
     //设置时间限制
     const index = gamingGroups.findIndex(value => value.groupID == session.channelId)
@@ -191,6 +192,10 @@ export async function checkAnswer(session:Session){
         else{
             const match = matchSong(nickNamesTable,answer)
             console.log('MatchSongs:' + match)
+            if(match.length == 0 || match.length > 10){
+                session.send('没有找到相关歌曲')
+                return
+            }
             if(match.length == 1){
                 if(match[0] == gamingGroups[index].songName){
                     let messageList = []
@@ -201,7 +206,7 @@ export async function checkAnswer(session:Session){
                     fastEndGussingSong(session.channelId)
                 }
                 else{
-                    session.send(`答案不是${songList.list[match[0]]}哦`)
+                    session.send(`答案不是${match[0]}哦`)
                 }
             }
             else{
@@ -209,10 +214,10 @@ export async function checkAnswer(session:Session){
                 for(let i = 0;i < match.length;i++){
                     msg += `${i+1}.${match[i]}\n`
                 }
-                msg = msg.slice(0,msg.length-2)
+                msg = msg.slice(0,msg.length-1)
                 session.sendQueued(msg)
                 const reply = await session.prompt(10000)
-                if(parseInt(reply)){
+                if(parseInt(reply) && gamingGroups[index]){
                     const id = parseInt(reply)
                     if(match[id-1] == gamingGroups[index].songName){
                         let messageList = []
@@ -239,7 +244,7 @@ function getRandomSongID():number{
         answerID = songIDs[answerIndex]
         if(answerID < 1000){
             const songTilte = songList.list[answerID].musicTitle[0].toLowerCase()
-            if( songTilte != undefined && !songTilte.includes('ver') && !songTilte.includes('full') && !songTilte.includes('超高難易度') && !songTilte.includes('（')){
+            if( !blockedWords.some(value => songTilte.includes(value))){
                 songIDisOK = true
             }
         }
@@ -259,8 +264,8 @@ function getJacketUrl(songID:number):string{
 
 async function processedAudio(ctx:Context, songID:number, groupID:string):Promise<Buffer>{
     const idString = songID.toString().padStart(3,'0')
-    const filePath = path.join(__dirname,`../../../../data/assets/songMp3/song${idString}.mp3`)
-    const tempFilePath = path.join(__dirname,`../../../../data/assets/temp/${groupID}.mp3`)
+    const filePath = path.join(songAssetPath,`song${idString}.mp3`)
+    const tempFilePath = path.join(tempAssetPath,`${groupID}.mp3`)
     let buffer:Buffer
     if(fs.existsSync(filePath)){
         buffer = fs.readFileSync(filePath)
@@ -287,6 +292,9 @@ async function processedAudio(ctx:Context, songID:number, groupID:string):Promis
                 // console.log('[Log] '+'已生成两秒的音频');
                 const output = fs.readFileSync(tempFilePath)
                 fs.unlinkSync(tempFilePath)
+                if(pluginConfig['useLocalStorage'] == false){
+                    fs.unlinkSync(filePath)
+                }
                 resolve(output)
             })
             .on('error', (err) => {
